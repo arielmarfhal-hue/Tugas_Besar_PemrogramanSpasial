@@ -1,0 +1,183 @@
+# ===================================================================
+# WEBGIS TUTUPAN LAHAN & INDEKS SPEKTRAL JOMBANG (SHINY + LEAFLET)
+# ===================================================================
+
+# 1. LOAD LIBRARY WAJIB
+library(shiny)
+library(shinydashboard)
+library(leaflet)
+library(leaflet.extras)
+library(sf)
+library(raster)
+library(tidyverse)
+library(DT)
+
+# 2. SET WORKING DIRECTORY
+setwd("D:/SEMESTER 5/Pemrograman Spasial/Tugas/Leaflet/shp_Jombang/KAB. JOMBANG")
+
+# 3. LOAD VEKTOR KECAMATAN JOMBANG
+kec_jombang <- read_sf("ADMINISTRASIDESA_AR_25K.shp") %>% 
+  group_by(WADMKC) %>% 
+  summarise(geometry = st_union(geometry)) %>% 
+  ungroup() %>% 
+  st_transform(crs = 4326)
+
+# 4. LOAD RASTER TER-DOWNSAMPLE (AGAR RENDER SUPER CEPAT & RINGAN)
+load_fast_raster <- function(file_path) {
+  r <- raster(file_path)
+  # Jika piksel > 500.000, lakukan downsampling ringan
+  if (ncell(r) > 500000) {
+    r <- aggregate(r, fact = 2, fun = mean)
+  }
+  return(r)
+}
+
+r_ndvi <- load_fast_raster("output/NDVI_Jombang.tif")
+r_ndbi <- load_fast_raster("output/NDBI_Jombang.tif")
+r_ndwi <- load_fast_raster("output/NDWI_Jombang.tif")
+r_ndci <- load_fast_raster("output/NDCI_Jombang.tif")
+
+# Pre-extract Values (Bebas dari Error NA)
+v_ndvi <- getValues(r_ndvi)
+v_ndbi <- getValues(r_ndbi)
+v_ndwi <- getValues(r_ndwi)
+v_ndci <- getValues(r_ndci)
+
+# Palet Warna Interaktif
+pal_ndvi <- colorNumeric("YlGn", v_ndvi, na.color = "transparent")
+pal_ndbi <- colorNumeric("YlOrRd", v_ndbi, na.color = "transparent")
+pal_ndwi <- colorNumeric("Blues", v_ndwi, na.color = "transparent")
+pal_ndci <- colorNumeric("PuBuGn", v_ndci, na.color = "transparent")
+
+# 5. LOAD TABEL ZONAL STATISTICS
+csv_path <- "output/Tabel_Zonal_Statistics_Jombang.csv"
+if (file.exists(csv_path)) {
+  tabel_zonal <- read.csv(csv_path)
+} else {
+  tabel_zonal <- data.frame(
+    Kecamatan = kec_jombang$WADMKC,
+    Keterangan = "Tabel Zonal Statistics belum dibuat"
+  )
+}
+
+
+# ===================================================================
+# 6. USER INTERFACE (UI)
+# ===================================================================
+ui <- dashboardPage(
+  skin = "green",
+  dashboardHeader(title = "WebGIS Jombang"),
+  
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Peta Interaktif", tabName = "map_tab", icon = icon("map")),
+      menuItem("Tabel Zonal Statistics", tabName = "table_tab", icon = icon("table"))
+    )
+  ),
+  
+  dashboardBody(
+    tabItems(
+      # TAB 1: PETA INTERAKTIF
+      tabItem(
+        tabName = "map_tab",
+        fluidRow(
+          box(
+            width = 12,
+            title = "Peta Interaktif Indeks Spektral & Administrasi Kecamatan",
+            status = "primary",
+            solidHeader = TRUE,
+            leafletOutput("map", height = "78vh")
+          )
+        )
+      ),
+      
+      # TAB 2: TABEL DATA
+      tabItem(
+        tabName = "table_tab",
+        fluidRow(
+          box(
+            width = 12,
+            title = "Tabel Statistik Indeks Spektral per Kecamatan",
+            status = "success",
+            solidHeader = TRUE,
+            DT::dataTableOutput("zonal_table")
+          )
+        )
+      )
+    )
+  )
+)
+
+
+# ===================================================================
+# 7. SERVER LOGIC
+# ===================================================================
+server <- function(input, output, session) {
+  
+  # Render Peta Leaflet
+  output$map <- renderLeaflet({
+    leaflet(kec_jombang) %>%
+      # Basemaps
+      addTiles(group = "OpenStreetMap") %>%
+      addProviderTiles(providers$CartoDB.Positron, group = "CartoDB Light") %>%
+      addProviderTiles(providers$Esri.WorldImagery, group = "Satelit Esri") %>%
+      
+      # Layer Raster Indeks Spektral
+      addRasterImage(r_ndvi, colors = pal_ndvi, opacity = 0.8, group = "Raster NDVI", maxBytes = 8 * 1024 * 1024) %>%
+      addRasterImage(r_ndbi, colors = pal_ndbi, opacity = 0.8, group = "Raster NDBI", maxBytes = 8 * 1024 * 1024) %>%
+      addRasterImage(r_ndwi, colors = pal_ndwi, opacity = 0.8, group = "Raster NDWI", maxBytes = 8 * 1024 * 1024) %>%
+      addRasterImage(r_ndci, colors = pal_ndci, opacity = 0.8, group = "Raster NDCI", maxBytes = 8 * 1024 * 1024) %>%
+      
+      # Legenda Raster
+      addLegend(pal = pal_ndvi, values = v_ndvi, title = "NDVI", group = "Raster NDVI", position = "bottomright") %>%
+      addLegend(pal = pal_ndbi, values = v_ndbi, title = "NDBI", group = "Raster NDBI", position = "bottomright") %>%
+      addLegend(pal = pal_ndwi, values = v_ndwi, title = "NDWI", group = "Raster NDWI", position = "bottomright") %>%
+      addLegend(pal = pal_ndci, values = v_ndci, title = "NDCI", group = "Raster NDCI", position = "bottomright") %>%
+      
+      # Layer Batas Kecamatan Vektor
+      addPolygons(
+        fillColor = "transparent",
+        weight = 2,
+        opacity = 1,
+        color = "white",
+        dashArray = "3",
+        highlightOptions = highlightOptions(
+          weight = 3,
+          color = "#ffff00",
+          dashArray = "",
+          bringToFront = TRUE
+        ),
+        label = ~WADMKC,
+        popup = ~paste0("<b>Kecamatan: </b>", WADMKC),
+        group = "Batas Kecamatan"
+      ) %>%
+      
+      # Kontrol Checkbox Layer
+      addLayersControl(
+        baseGroups = c("Satelit Esri", "CartoDB Light", "OpenStreetMap"),
+        overlayGroups = c("Batas Kecamatan", "Raster NDVI", "Raster NDBI", "Raster NDWI", "Raster NDCI"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
+      
+      # Sembunyikan layer NDBI, NDWI, dan NDCI secara default agar tidak berat di awal
+      hideGroup(c("Raster NDBI", "Raster NDWI", "Raster NDCI")) %>%
+      
+      addScaleBar(position = "bottomleft") %>%
+      addFullscreenControl()
+  })
+  
+  # Render Tabel Zonal Statistics
+  output$zonal_table <- DT::renderDataTable({
+    DT::datatable(
+      tabel_zonal,
+      options = list(pageLength = 10, scrollX = TRUE),
+      rownames = FALSE
+    )
+  })
+}
+
+
+# ===================================================================
+# 8. RUN APPLICATION
+# ===================================================================
+shiny::shinyApp(ui = ui, server = server)
